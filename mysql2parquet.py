@@ -13,14 +13,36 @@ writer = None
 def has_auto_increment_column(connection, table_name):
     """
     Check if the given table has an auto-increment column.
+    return tuple (has_autoinc, auto_increment_colname, auto_increment_index)
     """
     cursor = connection.cursor()
     cursor.execute(f"SHOW CREATE TABLE {table_name};")
     create_table_stmt = cursor.fetchone()[1]
+    has_autoinc = "AUTO_INCREMENT" in create_table_stmt.upper()
+    auto_increment_colname = None
+    auto_increment_index = 0
+    if has_autoinc:
+        # Determine the auto-increment column name
+        cursor.execute(f"SHOW COLUMNS FROM {table_name};")        
+        for column in cursor.fetchall():
+            if column[5]:  # 5 is KEY index in SHOW COLUMNS result
+                auto_increment_colname = column[0]
+                break
+            auto_increment_index += 1
+        
+        if auto_increment_colname is None:
+            raise ValueError("No auto-increment column found, please check the table.")
+
     cursor.close()
 
     # Check for the presence of AUTO_INCREMENT in the CREATE TABLE statement
-    return "AUTO_INCREMENT" in create_table_stmt.upper()
+    return has_autoinc, auto_increment_colname, auto_increment_index
+
+# function to log time elapsed for each batch
+def log_time_elapsed(start_time, batch_size):
+    elapsed_time = time.time() - start_time
+    rows_per_second = batch_size / elapsed_time if elapsed_time > 0 else float('inf')
+    return f"Time: {elapsed_time:.2f} s. Rows per second: {rows_per_second:.2f}"
 
 # Updated function to fetch data in batches
 def fetch_data_in_batches(connection, table_name, batch_size):
@@ -31,20 +53,9 @@ def fetch_data_in_batches(connection, table_name, batch_size):
     cursor = connection.cursor()
     
     # Checking for auto-increment column
-    if has_auto_increment_column(connection, table_name):
-        # Determine the auto-increment column name
-        cursor.execute(f"SHOW COLUMNS FROM {table_name};")
-        auto_increment_col = None
-        auto_increment_index = 0
-        for column in cursor.fetchall():
-            if column[5]:  # 5 is KEY index in SHOW COLUMNS result
-                auto_increment_col = column[0]
-                break
-            auto_increment_index += 1
-        
-        if auto_increment_col is None:
-            raise ValueError("No auto-increment column found, please check the table.")
-        
+    has_autoinc, auto_increment_col, auto_increment_index = has_auto_increment_column(connection, table_name)
+    if has_autoinc(connection, table_name):
+                
         # Initialize last_id for fetching rows with greater id
         last_id = 0
         
@@ -71,15 +82,15 @@ def fetch_data_in_batches(connection, table_name, batch_size):
             # Yield the DataFrame as a batch
             yield df
 
-            elapsed_time = time.time() - start_time
-            rows_per_second = batch_size / elapsed_time if elapsed_time > 0 else float('inf')
 
-            print(f"Fetched batch with starting id {last_id}. Time: {elapsed_time} s. Rows per second: {rows_per_second:.2f}")
+
+            print(f"Fetched batch with starting id {last_id}. {log_time_elapsed(start_time, batch_size=batch_size)}")
 
     else:
         # Fallback to original LIMIT/OFFSET strategy
         offset = 0
         while True:
+            start_time = time.time()
             query = f"SELECT * FROM {table_name} LIMIT {batch_size} OFFSET {offset};"
             cursor.execute(query)
 
@@ -100,7 +111,7 @@ def fetch_data_in_batches(connection, table_name, batch_size):
 
             # Move to the next batch
             offset += batch_size
-            print(f"Moved to offset {offset}.")
+            print(f"Moved to offset {offset}.  {log_time_elapsed(start_time, batch_size=batch_size)}")
 
 # Function to save data to a Parquet file
 def save_to_parquet(df, parquet_file, tablename: str, batch_count: int):
