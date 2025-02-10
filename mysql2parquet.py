@@ -4,6 +4,10 @@ import pyarrow.parquet as pq
 import pandas as pd
 import argparse
 import time
+import os
+
+default_batch_size = 100000
+writer = None
 
 # Function to check if the table has an auto-increment column
 def has_auto_increment_column(connection, table_name):
@@ -31,10 +35,12 @@ def fetch_data_in_batches(connection, table_name, batch_size):
         # Determine the auto-increment column name
         cursor.execute(f"SHOW COLUMNS FROM {table_name};")
         auto_increment_col = None
+        auto_increment_index = 0
         for column in cursor.fetchall():
             if column[5]:  # 5 is KEY index in SHOW COLUMNS result
                 auto_increment_col = column[0]
                 break
+            auto_increment_index += 1
         
         if auto_increment_col is None:
             raise ValueError("No auto-increment column found, please check the table.")
@@ -54,7 +60,7 @@ def fetch_data_in_batches(connection, table_name, batch_size):
                 break
 
             # Update last_id to the maximum one fetched
-            last_id = max(row[0] for row in rows)  # Assuming the first column is the auto-increment id
+            last_id = max(row[auto_increment_col] for row in rows)
             
             # Get column names
             columns = [desc[0] for desc in cursor.description]
@@ -97,20 +103,16 @@ def fetch_data_in_batches(connection, table_name, batch_size):
             print(f"Moved to offset {offset}.")
 
 # Function to save data to a Parquet file
-def save_to_parquet(df, parquet_file):
+def save_to_parquet(df, parquet_file, tablename: str, batch_count: int):
     """
     Save a DataFrame to a Parquet file. Appends to the file if it already exists.
     """
     table = pa.Table.from_pandas(df)
 
-    # If the Parquet file exists, append the data, otherwise create a new one.
-    try:
-        pq.read_table(parquet_file)
-        with pq.ParquetWriter(parquet_file, table.schema) as writer:
-            writer.write_table(table)
-    except:
-        # Create a new Parquet file if it doesn't exist
-        pq.write_table(table, parquet_file)
+    writer = pq.ParquetWriter(f"{tablename}/{parquet_file}_{batch_count}.parquet", table.schema)            
+    writer.write_table(table)
+    writer.close()
+   
 
 # Main function to handle parameters and run the process
 def main(args):
@@ -123,17 +125,24 @@ def main(args):
         ssl={"fake_flag_to_enable_tls":True}
     )
 
-    parquet_file = args.output_file
-    batch_size = args.batch_size
+    tablename = args.table
+    parquet_file = args.output_file if args.output_file else tablename    
+    batch_size = args.batch_size    
+    batch_count = 0
+
+    # Create a new directory because it does not exist
+    dirExist = os.path.exists(tablename)
+    if not dirExist:
+        os.makedirs(tablename)
 
     try:
         # Process the data in batches and save it to Parquet
-        for batch_df in fetch_data_in_batches(connection, args.table, batch_size):
-            save_to_parquet(batch_df, parquet_file)
-            print(f"Processed batch with {len(batch_df)} rows.")
+        for batch_df in fetch_data_in_batches(connection, tablename, batch_size):
+            save_to_parquet(batch_df, parquet_file, tablename, batch_count)
+            batch_count += 1
+            
 
-    finally:
-        # Close the connection after processing
+    finally:        
         connection.close()
 
 # Command-line argument parsing
@@ -164,12 +173,12 @@ def parse_args():
         help="The name of the table to fetch data from."
     )
     parser.add_argument(
-        '--output-file', required=True,
+        '--output-file',
         help="The output Parquet file where the data will be saved."
     )
     parser.add_argument(
-        '--batch-size', type=int, default=10000,
-        help="The number of rows to fetch in each batch (default: 10000)."
+        '--batch-size', type=int, default=default_batch_size,
+        help=f"The number of rows to fetch in each batch (default: {default_batch_size})."
     )
 
     return parser.parse_args()
