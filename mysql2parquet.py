@@ -60,7 +60,7 @@ def fetch_data_in_batches(connection, table_name, batch_size):
                 break
 
             # Update last_id to the maximum one fetched
-            last_id = max(row[auto_increment_col] for row in rows)
+            last_id = max(row[auto_increment_index] for row in rows)
             
             # Get column names
             columns = [desc[0] for desc in cursor.description]
