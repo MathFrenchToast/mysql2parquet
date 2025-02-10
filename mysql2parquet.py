@@ -3,6 +3,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pandas as pd
 import argparse
+import time
 
 # Function to check if the table has an auto-increment column
 def has_auto_increment_column(connection, table_name):
@@ -42,6 +43,7 @@ def fetch_data_in_batches(connection, table_name, batch_size):
         last_id = 0
         
         while True:
+            start_time = time.time()
             query = f"SELECT * FROM {table_name} WHERE {auto_increment_col} > {last_id} ORDER BY {auto_increment_col} ASC LIMIT {batch_size};"
             cursor.execute(query)
 
@@ -63,7 +65,10 @@ def fetch_data_in_batches(connection, table_name, batch_size):
             # Yield the DataFrame as a batch
             yield df
 
-            print(f"Fetched batch with starting id {last_id}.")
+            elapsed_time = time.time() - start_time
+            rows_per_second = batch_size / elapsed_time if elapsed_time > 0 else float('inf')
+
+            print(f"Fetched batch with starting id {last_id}. Time: {elapsed_time} s. Rows per second: {rows_per_second:.2f}")
 
     else:
         # Fallback to original LIMIT/OFFSET strategy
